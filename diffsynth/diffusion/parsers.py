@@ -77,6 +77,13 @@ def add_offload_training_config(parser: argparse.ArgumentParser):
     parser.add_argument("--cpu_offload_split_threshold", type=int, default=None, help="Experimental! When --enable_model_cpu_offload is enabled, modules with total params above this threshold (in MB) are recursively split into children. None means offload every leaf module directly. Default: None.")
     return parser
 
+def add_compile_config(parser: argparse.ArgumentParser):
+    parser.add_argument("--enable_compile", default=False, action="store_true", help="Enable torch.compile on the pipeline's repeated blocks (regional compilation). Incompatible with --enable_model_cpu_offload.")
+    parser.add_argument("--compile_mode", type=str, default="max-autotune-no-cudagraphs", help="torch.compile mode. Use 'max-autotune-no-cudagraphs' when gradient checkpointing is enabled.")
+    parser.add_argument("--compile_dynamic", default=True, action=argparse.BooleanOptionalAction, help="Enable dynamic shape compilation. Use --no-compile_dynamic for fixed resolution (better fusion). Default: True.")
+    parser.add_argument("--compile_fullgraph", default=False, action="store_true", help="Use fullgraph=True. Requires no graph breaks in the compiled block forward.")
+    return parser
+
 def add_logger_config(parser: argparse.ArgumentParser):
     parser.add_argument("--enable_tensorboard_log", default=False, action="store_true", help="Enable tensorboard for logging.")
     parser.add_argument("--enable_swanlab_log", default=False, action="store_true", help="Enable swanlab for logging.")
@@ -107,6 +114,44 @@ def add_dmd2_config(parser: argparse.ArgumentParser):
     parser.add_argument("--dmd2_student_grad_clip_norm", type=float, default=10.0, help="Clip student gradients to this norm.")
     return parser
 
+def add_profile_config(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--profile",
+        default=False,
+        action="store_true",
+        help="Enable torch.profiler: warm up 10 steps, record 1 step, then export a gzipped chrome trace "
+        "(<worker_name>.trace.json.gz) to <output_path>/logs. Profiles CPU + CUDA + memory on every DDP rank.",
+    )
+    return parser
+
+def add_seed_config(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility (torch / numpy / random / DataLoader). If None, a random seed is used.",
+    )
+    return parser
+
+def add_deterministic_config(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--deterministic",
+        default=False,
+        action="store_true",
+        help="Enable deterministic mode for reproducible runs: cuDNN deterministic + no benchmark, "
+        "torch.use_deterministic_algorithms(warn_only=True), and CUBLAS_WORKSPACE_CONFIG. "
+        "Needed for fair A/B comparisons (e.g. --enable_compile on/off). May slow down training.",
+    )
+    parser.add_argument(
+        "--matmul_precision",
+        type=str,
+        default="highest",
+        choices=["highest", "high", "medium"],
+        help="torch.set_float32_matmul_precision. Use the SAME value in both arms of an A/B test, "
+        "otherwise TF32 (high/medium) vs fp32 (highest) becomes a precision confound. Default: highest.",
+    )
+    return parser
+
 def add_general_config(parser: argparse.ArgumentParser):
     parser = add_dataset_base_config(parser)
     parser = add_model_config(parser)
@@ -117,5 +162,9 @@ def add_general_config(parser: argparse.ArgumentParser):
     parser = add_gradient_config(parser)
     parser = add_template_model_config(parser)
     parser = add_offload_training_config(parser)
+    parser = add_compile_config(parser)
     parser = add_logger_config(parser)
+    parser = add_profile_config(parser)
+    parser = add_seed_config(parser)
+    parser = add_deterministic_config(parser)
     return parser

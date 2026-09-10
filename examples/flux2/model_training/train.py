@@ -100,10 +100,28 @@ if __name__ == "__main__":
     parser = flux2_parser()
     args = parser.parse_args()
 
+    # Reproducibility / determinism controls — applied before any CUDA work.
+    # Matmul precision must be identical across the two arms of an A/B test,
+    # so it is set unconditionally here (not only when --enable_compile is on).
+    torch.set_float32_matmul_precision(args.matmul_precision)
+    if args.deterministic:
+        # CUBLAS_WORKSPACE_CONFIG must be set before cuBLAS initializes (first CUDA matmul).
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        if args.seed is None:
+            print("[deterministic] --deterministic without --seed: pass --seed for full reproducibility.", flush=True)
+
     accelerator = accelerate.Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=args.find_unused_parameters)],
     )
+    if args.seed is not None:
+        # Explicitly (re)seed for clarity; also covers model init between Accelerator creation and training.
+        accelerate.utils.set_seed(args.seed, device_specific=True)
+        if accelerator.is_main_process:
+            print(f"[seed] random seed set to {args.seed}", flush=True)
     dataset = UnifiedDataset(
         base_path=args.dataset_base_path,
         metadata_path=args.dataset_metadata_path,
@@ -142,6 +160,19 @@ if __name__ == "__main__":
         task=args.task,
         device="cpu" if (args.initialize_model_on_cpu or args.enable_model_cpu_offload) else accelerator.device,
     )
+    # expose the seed to the pipeline so loss-side RNG (timestep/noise) can be made reproducible / debugged
+    if args.seed is not None:
+        model.pipe._training_seed = args.seed
+    if args.enable_compile:
+        if args.enable_model_cpu_offload:
+            print("[compile] --enable_model_cpu_offload is on, skip torch.compile (incompatible with layer offload).")
+        else:
+            model.pipe.compile_pipeline(
+                mode=args.compile_mode,
+                dynamic=args.compile_dynamic,
+                fullgraph=args.compile_fullgraph,
+                compile_models=getattr(model.pipe, "compilable_models", None),
+            )
     model_logger = ModelLogger(
         args.output_path,
         remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
